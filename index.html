@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de Mapas do Brasil em SVG</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- D3.js -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Controls -->
+        <aside class="sidebar">
+            <header class="sidebar-header">
+                <h1><i class="fa-solid fa-map-location-dot"></i> MapForge BR</h1>
+                <p>Gerador de mapas vetoriais</p>
+            </header>
+
+            <div class="control-group">
+                <h3><i class="fa-solid fa-layer-group"></i> Navegação</h3>
+                <div class="nav-controls">
+                    <button id="btn-back-br" class="btn primary disabled" disabled>
+                        <i class="fa-solid fa-arrow-left"></i> Voltar p/ Brasil
+                    </button>
+                    <div id="current-view-label" class="view-label">Visão: Brasil (Estados)</div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3><i class="fa-solid fa-paint-roller"></i> Ferramenta</h3>
+                <div class="tool-selector">
+                    <label class="radio-label">
+                        <input type="radio" name="toolMode" value="navigate" checked>
+                        <span class="custom-radio"><i class="fa-solid fa-hand-pointer"></i> Navegar</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="toolMode" value="paint">
+                        <span class="custom-radio"><i class="fa-solid fa-fill-drip"></i> Pintar</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="control-group color-controls">
+                <h3><i class="fa-solid fa-palette"></i> Cores</h3>
+                
+                <div class="color-picker-item">
+                    <label for="color-paint">Cor do Pincel:</label>
+                    <input type="color" id="color-paint" value="#3b82f6">
+                </div>
+                
+                <hr>
+
+                <div class="color-picker-item">
+                    <label for="color-bg">Fundo do Mapa (SVG):</label>
+                    <input type="color" id="color-bg" value="#ffffff">
+                </div>
+                
+                <div class="color-picker-item checkbox-item" style="margin-top: 0; margin-bottom: 8px;">
+                    <label class="switch">
+                        <input type="checkbox" id="toggle-bg-transparent">
+                        <span class="slider round"></span>
+                    </label>
+                    <span>Fundo Transparente</span>
+                </div>
+                
+                <div class="color-picker-item">
+                    <label for="color-base">Cor Padrão dos Objetos:</label>
+                    <input type="color" id="color-base" value="#e2e8f0">
+                </div>
+                
+                <div class="color-picker-item">
+                    <label for="color-stroke-mun">Cor das Bordas (Municípios):</label>
+                    <input type="color" id="color-stroke-mun" value="#94a3b8">
+                </div>
+                <div class="color-picker-item">
+                    <label for="stroke-width-mun">Espessura (Municípios):</label>
+                    <input type="range" id="stroke-width-mun" min="0" max="5" step="0.1" value="0.5">
+                    <input type="number" id="stroke-width-mun-val" class="number-input-small" min="0" max="5" step="0.1" value="0.5">
+                </div>
+                
+                <div class="color-picker-item">
+                    <label for="color-stroke-uf">Cor das Bordas (Estados):</label>
+                    <input type="color" id="color-stroke-uf" value="#000000">
+                </div>
+                <div class="color-picker-item">
+                    <label for="stroke-width-uf">Espessura (Estados):</label>
+                    <input type="range" id="stroke-width-uf" min="0" max="10" step="0.1" value="2.5">
+                    <input type="number" id="stroke-width-uf-val" class="number-input-small" min="0" max="10" step="0.1" value="2.5">
+                </div>
+                
+                <div class="color-picker-item checkbox-item">
+                    <label class="switch">
+                        <input type="checkbox" id="toggle-borders" checked>
+                        <span class="slider round"></span>
+                    </label>
+                    <span>Exibir Bordas</span>
+                </div>
+                
+                <div class="color-picker-item" style="margin-top: 5px; flex-direction: column; align-items: flex-start; gap: 5px;">
+                    <label for="br-division-mode">Divisão no Brasil:</label>
+                    <select id="br-division-mode" class="custom-select" style="width: 100%;">
+                        <option value="none">Apenas Estados</option>
+                        <option value="painted">Municípios (em Estados Pintados)</option>
+                        <option value="all">Todos Municípios (Lento)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3><i class="fa-solid fa-download"></i> Exportar</h3>
+                <button id="btn-export-svg" class="btn success">
+                    <i class="fa-solid fa-file-arrow-down"></i> Baixar SVG
+                </button>
+            </div>
+            
+        </aside>
+
+        <!-- Main Map Area -->
+        <main class="map-area">
+            <div id="loader" class="loader"><div class="spinner"></div> Carregando dados geográficos...</div>
+            <div id="map-container"></div>
+            
+            <!-- Zoom Controls -->
+            <div class="zoom-controls">
+                <button id="btn-zoom-out" class="btn-icon"><i class="fa-solid fa-minus"></i></button>
+                <input type="range" id="zoom-slider" min="10" max="800" step="1" value="100">
+                <div class="zoom-input-group">
+                    <input type="number" id="zoom-input" min="10" max="800" value="100">
+                    <span>%</span>
+                </div>
+                <button id="btn-zoom-in" class="btn-icon"><i class="fa-solid fa-plus"></i></button>
+            </div>
+
+            <!-- Tooltip element -->
+            <div id="tooltip" class="tooltip hidden"></div>
+        </main>
+
+        <!-- Right Sidebar: Localidades -->
+        <aside class="right-sidebar">
+            <div class="right-sidebar-header">
+                <h3><i class="fa-solid fa-list"></i> Localidades</h3>
+                <button id="btn-sort-list" class="btn-icon" title="Ordenar A-Z"><i class="fa-solid fa-arrow-down-a-z"></i></button>
+            </div>
+            <div class="search-box">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="search-local" placeholder="Buscar localidade...">
+            </div>
+            <div id="add-uf-container" class="add-uf-container hidden">
+                <select id="add-uf-select" class="custom-select">
+                    <option value="" disabled selected>+ Adicionar vizinho...</option>
+                </select>
+                <button id="btn-add-uf" class="btn success btn-icon-small" title="Adicionar"><i class="fa-solid fa-plus"></i></button>
+            </div>
+            <ul id="localidades-list" class="localidades-list">
+                <!-- Items populated via JS -->
+            </ul>
+        </aside>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
