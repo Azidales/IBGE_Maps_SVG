@@ -29,6 +29,9 @@ const DEFAULT_SETTINGS = {
     shadows: true,
     lightAngle: 215,
     markerSize: 0.8,
+    munHeight: 0.12,
+    routeStyle: 'flat',
+    routeLift: 0.15,
     routeArc: 0.28,
     routeWidth: 0.11,
     fov: 30,
@@ -54,6 +57,8 @@ const statesMeta = {};      // cod -> { sigla, nome }
 const stateObjs = {};       // cod -> { group, mesh, topMat, sideMat, labelPoint, bbox, area }
 let municipiosPromise = null; // lista para busca (carregada uma vez)
 let pendingMarker = null;   // marcador sendo criado (local já escolhido)
+const munShapes = {};       // munId -> { shapes, segs } (malha do município, já projetada)
+const munLoading = new Set();
 let editingMarkerId = null;
 
 // ---------------------------------------------------------------------------
@@ -105,6 +110,8 @@ scene.add(ground);
 const mapGroup = new THREE.Group();
 mapGroup.rotation.x = -Math.PI / 2;
 scene.add(mapGroup);
+const munGroup = new THREE.Group();
+mapGroup.add(munGroup);
 const labelGroup = new THREE.Group();
 mapGroup.add(labelGroup);
 const markerGroup = new THREE.Group();
@@ -352,6 +359,44 @@ function clearGroup(group) {
 // ---------------------------------------------------------------------------
 // Estados (malha do IBGE)
 // ---------------------------------------------------------------------------
+// Converte um Polygon/MultiPolygon GeoJSON em shapes do Three.js (já projetados)
+// e nos segmentos do contorno (z = 1, o topo da extrusão).
+function geometryToShapes(geometry) {
+    const polys = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+    const shapes = [];
+    const segs = [];
+    let largest = null, largestArea = 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    for (const poly of polys) {
+        const rings = poly.map(ring => {
+            const pts = ring.map(([lon, lat]) => project(lon, lat));
+            const a = pts[0], b = pts[pts.length - 1];
+            if (pts.length > 1 && a[0] === b[0] && a[1] === b[1]) pts.pop();
+            return pts;
+        });
+        if (rings[0].length < 3) continue;
+        const shape = new THREE.Shape(rings[0].map(([x, y]) => new THREE.Vector2(x, y)));
+        for (let i = 1; i < rings.length; i++) {
+            if (rings[i].length >= 3) shape.holes.push(new THREE.Path(rings[i].map(([x, y]) => new THREE.Vector2(x, y))));
+        }
+        shapes.push(shape);
+        for (const ring of rings) {
+            for (let i = 0; i < ring.length; i++) {
+                const p = ring[i], q = ring[(i + 1) % ring.length];
+                segs.push(p[0], p[1], 1.002, q[0], q[1], 1.002);
+            }
+        }
+        for (const [x, y] of rings[0]) {
+            minX = Math.min(minX, x); minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+        }
+        const area = Math.abs(ringArea(rings[0]));
+        if (area > largestArea) { largestArea = area; largest = rings; }
+    }
+    return { shapes, segs, largest, bbox: { minX, minY, maxX, maxY } };
+}
+
 async function loadStates() {
     const [geo, meta] = await Promise.all([
         fetch(`${IBGE}/v3/malhas/paises/BR?intrarregiao=UF&resolucao=2&formato=application/vnd.geo+json`).then(r => {
@@ -364,38 +409,7 @@ async function loadStates() {
 
     for (const f of geo.features) {
         const cod = String(f.properties.codarea);
-        const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
-        const shapes = [];
-        const segs = [];
-        let largest = null, largestArea = 0;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-        for (const poly of polys) {
-            const rings = poly.map(ring => {
-                const pts = ring.map(([lon, lat]) => project(lon, lat));
-                const a = pts[0], b = pts[pts.length - 1];
-                if (pts.length > 1 && a[0] === b[0] && a[1] === b[1]) pts.pop();
-                return pts;
-            });
-            if (rings[0].length < 3) continue;
-            const shape = new THREE.Shape(rings[0].map(([x, y]) => new THREE.Vector2(x, y)));
-            for (let i = 1; i < rings.length; i++) {
-                if (rings[i].length >= 3) shape.holes.push(new THREE.Path(rings[i].map(([x, y]) => new THREE.Vector2(x, y))));
-            }
-            shapes.push(shape);
-            for (const ring of rings) {
-                for (let i = 0; i < ring.length; i++) {
-                    const p = ring[i], q = ring[(i + 1) % ring.length];
-                    segs.push(p[0], p[1], 1.002, q[0], q[1], 1.002);
-                }
-            }
-            for (const [x, y] of rings[0]) {
-                minX = Math.min(minX, x); minY = Math.min(minY, y);
-                maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-            }
-            const area = Math.abs(ringArea(rings[0]));
-            if (area > largestArea) { largestArea = area; largest = rings; }
-        }
+        const { shapes, segs, largest, bbox } = geometryToShapes(f.geometry);
 
         const geom = new THREE.ExtrudeGeometry(shapes, { depth: 1, bevelEnabled: false, curveSegments: 1 });
         geom.computeVertexNormals();
@@ -417,7 +431,7 @@ async function loadStates() {
         stateObjs[cod] = {
             group, mesh, topMat, sideMat, lines,
             labelPoint: polylabel(largest),
-            bbox: { minX, minY, maxX, maxY }
+            bbox
         };
     }
 }
@@ -467,19 +481,97 @@ function rebuildLabels() {
 // ---------------------------------------------------------------------------
 // Marcadores
 // ---------------------------------------------------------------------------
+// Marcadores antigos (sem o campo "pin") mostram o pino só quando não têm ícone
+const showsPin = m => m.pin ?? !m.icon;
+const paintsMun = m => !!(m.paint && m.munId);
+
 function markerAnchor(m) {
-    return worldPos(m.lon, m.lat, stateHeight(m.uf) + 0.02);
+    const munLift = paintsMun(m) && munShapes[m.munId] ? S.munHeight : 0;
+    return worldPos(m.lon, m.lat, stateHeight(m.uf) + munLift + 0.02);
+}
+
+function loadMunShapes(munId) {
+    if (munShapes[munId] || munLoading.has(munId)) return;
+    munLoading.add(munId);
+    fetch(`${IBGE}/v3/malhas/municipios/${munId}?formato=application/vnd.geo+json`)
+        .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(geo => {
+            const { shapes, segs, bbox } = geometryToShapes(geo.features[0].geometry);
+            munShapes[munId] = { shapes, segs, bbox };
+            rebuildMarkers();
+        })
+        .catch(e => console.error('Erro ao carregar a malha do município', munId, e))
+        .finally(() => munLoading.delete(munId));
+}
+
+// Municípios pintados: uma placa fina por cima do estado, com laterais e contorno
+function rebuildMunicipios() {
+    clearGroup(munGroup);
+    for (const m of scene3d.markers) {
+        if (!paintsMun(m)) continue;
+        const data = munShapes[m.munId];
+        if (!data) { loadMunShapes(m.munId); continue; }
+        const color = new THREE.Color(m.paintColor);
+        const topMat = new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
+        const sideMat = new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(S.sideShade), roughness: 0.9 });
+        const mesh = new THREE.Mesh(new THREE.ExtrudeGeometry(data.shapes, { depth: 1, bevelEnabled: false, curveSegments: 1 }), [topMat, sideMat]);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        const lineGeom = new LineSegmentsGeometry();
+        lineGeom.setPositions(data.segs);
+        const lines = new LineSegments2(lineGeom, borderMaterial);
+        lines.visible = S.borderWidth > 0;
+        const group = new THREE.Group();
+        group.add(mesh, lines);
+        group.position.z = stateHeight(m.uf);
+        group.scale.z = Math.max(S.munHeight, 0.004);
+        munGroup.add(group);
+    }
+}
+
+function markerIconCanvas(icon) {
+    const c = document.createElement('canvas');
+    c.width = 160;
+    c.height = 150;
+    const ctx = c.getContext('2d');
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 4;
+    ctx.font = `120px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(icon, c.width / 2, c.height - 6);
+    return c;
 }
 
 function rebuildMarkers() {
+    rebuildMunicipios();
     clearGroup(markerGroup);
     const size = S.markerSize;
     for (const m of scene3d.markers) {
         const anchor = markerAnchor(m);
-        const pin = pinCanvas(m.color, m.icon);
-        const pinSprite = makeSprite(pin, size * 1.15 * pin.height / 172, [0.5, 0]);
-        pinSprite.position.copy(anchor);
-        markerGroup.add(pinSprite);
+        // com o município pintado, o pino/ícone fica na borda norte dele e o rótulo na borda sul,
+        // assim a área pintada continua à vista entre os dois
+        const standAt = anchor.clone();
+        const labelAt = anchor.clone();
+        const mun = paintsMun(m) && munShapes[m.munId];
+        if (mun) {
+            standAt.z = -mun.bbox.maxY;
+            labelAt.z = -mun.bbox.minY;
+        }
+        if (showsPin(m)) {
+            const pin = pinCanvas(m.color, m.icon);
+            const pinSprite = makeSprite(pin, size * 1.15 * pin.height / 172, [0.5, 0]);
+            pinSprite.position.copy(standAt);
+            markerGroup.add(pinSprite);
+        } else if (m.icon) {
+            const iconSprite = makeSprite(markerIconCanvas(m.icon), size * 1.05, [0.5, 0]);
+            iconSprite.position.copy(standAt);
+            markerGroup.add(iconSprite);
+        }
 
         if (m.title || m.subtitle) {
             const label = pillCanvas([
@@ -487,7 +579,7 @@ function rebuildMarkers() {
                 { text: m.subtitle, size: 42, weight: 500, alpha: 0.85 }
             ], m.bg, '#ffffff', { radius: 30 });
             const lblSprite = makeSprite(label, size * 0.62 * label.height / 132, [0.5, 1.12]);
-            lblSprite.position.copy(anchor);
+            lblSprite.position.copy(labelAt);
             markerGroup.add(lblSprite);
         }
     }
@@ -503,54 +595,184 @@ function rebuildRoutes() {
         const a = scene3d.markers.find(m => m.id === r.from);
         const b = scene3d.markers.find(m => m.id === r.to);
         if (!a || !b) continue;
-        const A = markerAnchor(a), B = markerAnchor(b);
-        const dist = A.distanceTo(B);
-        if (dist < 0.01) continue;
-        // ponto de controle: sobe e desvia para o lado, para a curva aparecer em qualquer ângulo
-        const mid = A.clone().add(B).multiplyScalar(0.5);
-        const side = new THREE.Vector3(B.z - A.z, 0, A.x - B.x).normalize();
-        mid.addScaledVector(side, S.routeArc * dist * 0.7);
-        mid.y = Math.max(A.y, B.y) + S.routeArc * dist * 0.6;
-        const curve = new THREE.QuadraticBezierCurve3(A, mid, B);
-        const len = curve.getLength();
-        const width = S.routeWidth;
-        const headLen = Math.min(width * 5, len * 0.3);
-        const gapStart = Math.min(S.markerSize * 0.25, len * 0.15);
-        const gapEnd = Math.min(S.markerSize * 0.35, len * 0.2);
-        const u0 = gapStart / len;
-        const uHead = 1 - (gapEnd + headLen) / len;
-        const uEnd = 1 - gapEnd / len;
-        if (uHead <= u0) continue;
+        if (S.routeStyle === 'flat') buildFlatRoute(r, a, b);
+        else buildTubeRoute(r, a, b);
+    }
+}
 
-        const pts = [];
-        const N = 64;
-        for (let i = 0; i <= N; i++) pts.push(curve.getPointAt(u0 + (uHead - u0) * i / N));
-        const path = new THREE.CatmullRomCurve3(pts);
-        const mat = new THREE.MeshStandardMaterial({
-            color: r.color, roughness: 0.45, metalness: 0.05,
-            emissive: new THREE.Color(r.color).multiplyScalar(0.25)
-        });
-        const tube = new THREE.Mesh(new THREE.TubeGeometry(path, 96, width, 16, false), mat);
-        tube.castShadow = true;
-        routeGroup.add(tube);
+function routeLabelCanvas(r, a, b) {
+    const text = r.label || routeAutoLabel(a, b);
+    if (!text) return null;
+    const fg = new THREE.Color(r.color).getHSL({}).l > 0.55 ? '#1f2937' : '#ffffff';
+    return pillCanvas([{ text, size: 60, weight: 800 }], r.color, fg, { radius: 40, border: 'rgba(0,0,0,0.18)' });
+}
 
-        const head = new THREE.Mesh(new THREE.ConeGeometry(width * 2.4, headLen, 24), mat);
-        const pHead = curve.getPointAt(uHead), pEnd = curve.getPointAt(uEnd);
-        const dir = pEnd.clone().sub(pHead).normalize();
-        head.position.copy(pHead).addScaledVector(dir, headLen / 2);
-        head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        head.castShadow = true;
-        routeGroup.add(head);
+// Altura do topo do mapa (estado ou município pintado) num ponto do chão
+const downRay = new THREE.Raycaster();
+function surfaceHeightAt(x, z) {
+    downRay.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
+    const targets = Object.values(stateObjs).map(o => o.mesh)
+        .concat(munGroup.children.map(g => g.children[0]));
+    const hit = downRay.intersectObjects(targets, false)[0];
+    return hit ? hit.point.y : 0;
+}
 
-        const text = r.label || routeAutoLabel(a, b);
-        if (text) {
-            const fg = new THREE.Color(r.color).getHSL({}).l > 0.55 ? '#1f2937' : '#ffffff';
-            const canvas = pillCanvas([{ text, size: 60, weight: 800 }], r.color, fg, { radius: 40, border: 'rgba(0,0,0,0.18)' });
-            const sprite = makeSprite(canvas, S.markerSize * 0.6 * canvas.height / 140, [0.5, 0.5]);
-            sprite.position.copy(curve.getPoint(0.5));
-            sprite.renderOrder = 11;
-            routeGroup.add(sprite);
-        }
+// Contorno da seta (corpo + ponta) no plano do chão, em coordenadas 2D (x, -z)
+function arrowOutline(curve, len, u0, uHead, halfW, headHalfW, headLen, grow) {
+    const left = [], right = [];
+    const N = 64;
+    for (let i = 0; i <= N; i++) {
+        const u = u0 + (uHead - u0) * i / N;
+        const p = curve.getPointAt(u);
+        const t = curve.getTangentAt(u);
+        const n = new THREE.Vector2(-t.y, t.x);
+        left.push(p.clone().addScaledVector(n, halfW + grow));
+        right.push(p.clone().addScaledVector(n, -(halfW + grow)));
+    }
+    // recua o começo um pouco para o contorno também cobrir a ponta de trás
+    const t0 = curve.getTangentAt(u0);
+    left[0].addScaledVector(t0, -grow);
+    right[0].addScaledVector(t0, -grow);
+    const base = curve.getPointAt(uHead);
+    const tH = curve.getTangentAt(uHead);
+    const nH = new THREE.Vector2(-tH.y, tH.x);
+    const tip = base.clone().addScaledVector(tH, headLen + grow * 2.2);
+    const back = base.clone().addScaledVector(tH, -grow);
+    const pts = [
+        ...left,
+        back.clone().addScaledVector(nH, headHalfW + grow * 1.8),
+        tip,
+        back.clone().addScaledVector(nH, -(headHalfW + grow * 1.8)),
+        ...right.reverse()
+    ];
+    return new THREE.Shape(pts);
+}
+
+// Seta "de papel": figura plana deitada sobre o mapa, que acompanha a perspectiva
+function buildFlatRoute(r, a, b) {
+    const A3 = markerAnchor(a), B3 = markerAnchor(b);
+    const A = new THREE.Vector2(A3.x, -A3.z), B = new THREE.Vector2(B3.x, -B3.z);
+    const dist = A.distanceTo(B);
+    if (dist < 0.01) return;
+    const mid = A.clone().add(B).multiplyScalar(0.5);
+    const side = new THREE.Vector2(-(B.y - A.y), B.x - A.x).normalize();
+    const curve = new THREE.QuadraticBezierCurve(A, mid.clone().addScaledVector(side, S.routeArc * dist), B);
+    const len = curve.getLength();
+    const halfW = S.routeWidth * 1.5;
+    const headLen = Math.min(halfW * 4.5, len * 0.35);
+    const headHalfW = halfW * 2.6;
+    const gapStart = Math.min(S.markerSize * 0.35, len * 0.15);
+    // o ícone/pino de destino fica em pé sobre o ponto: para antes dele
+    const gapEnd = Math.min(S.markerSize * (showsPin(b) || b.icon ? 0.7 : 0.35), len * 0.25);
+    const u0 = gapStart / len;
+    const uHead = 1 - (gapEnd + headLen) / len;
+    if (uHead <= u0) return;
+
+    // flutua um pouco acima do ponto mais alto do mapa sob a seta
+    scene.updateMatrixWorld();
+    let top = Math.max(A3.y, B3.y);
+    for (let i = 0; i <= 20; i++) {
+        const p = curve.getPoint(i / 20);
+        top = Math.max(top, surfaceHeightAt(p.x, -p.y));
+    }
+    const y = top + S.routeLift;
+
+    const color = new THREE.Color(r.color);
+    const layers = [
+        { grow: halfW * 0.28, color: color.clone().multiplyScalar(0.55), y: y - 0.004, shadow: true },
+        { grow: 0, color, y, shadow: false }
+    ];
+    for (const L of layers) {
+        const shape = arrowOutline(curve, len, u0, uHead, halfW, headHalfW, headLen, L.grow);
+        const mesh = new THREE.Mesh(
+            new THREE.ShapeGeometry(shape),
+            new THREE.MeshBasicMaterial({ color: L.color, side: THREE.DoubleSide })
+        );
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = L.y;
+        mesh.castShadow = L.shadow;
+        routeGroup.add(mesh);
+    }
+
+    const canvas = routeLabelCanvas(r, a, b);
+    if (canvas) {
+        // deitado no chão o texto fica achatado pela perspectiva: um pouco maior que o das setas 3D
+        const h = S.markerSize * 0.95 * canvas.height / 140;
+        const w = h * canvas.width / canvas.height;
+        const label = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, h),
+            new THREE.MeshBasicMaterial({ map: makeTexture(canvas), transparent: true, depthWrite: false, side: THREE.DoubleSide })
+        );
+        // posição e giro dependem da câmera: ver updateFlatLabels()
+        label.userData.flat = { mid: curve.getPoint(0.5), n: side.clone(), gap: halfW * 1.3, w, h, y: y + 0.01 };
+        label.renderOrder = 3;
+        routeGroup.add(label);
+        updateFlatLabels();
+    }
+}
+
+// Rótulos das setas planas ficam deitados no mapa, mas com o texto alinhado
+// à horizontal da câmera, ao lado da curva (no lado de fora do arco).
+function updateFlatLabels() {
+    const az = controls.getAzimuthalAngle();
+    const right = new THREE.Vector2(Math.cos(az), Math.sin(az));
+    const up = new THREE.Vector2(-Math.sin(az), Math.cos(az));
+    for (const o of routeGroup.children) {
+        const f = o.userData.flat;
+        if (!f) continue;
+        const extent = Math.abs(f.w / 2 * right.dot(f.n)) + Math.abs(f.h / 2 * up.dot(f.n));
+        const p = f.mid.clone().addScaledVector(f.n, f.gap + extent);
+        o.rotation.set(-Math.PI / 2, 0, az);
+        o.position.set(p.x, f.y, -p.y);
+    }
+}
+
+function buildTubeRoute(r, a, b) {
+    const A = markerAnchor(a), B = markerAnchor(b);
+    const dist = A.distanceTo(B);
+    if (dist < 0.01) return;
+    // ponto de controle: sobe e desvia para o lado, para a curva aparecer em qualquer ângulo
+    const mid = A.clone().add(B).multiplyScalar(0.5);
+    const side = new THREE.Vector3(B.z - A.z, 0, A.x - B.x).normalize();
+    mid.addScaledVector(side, S.routeArc * dist * 0.7);
+    mid.y = Math.max(A.y, B.y) + S.routeArc * dist * 0.6;
+    const curve = new THREE.QuadraticBezierCurve3(A, mid, B);
+    const len = curve.getLength();
+    const width = S.routeWidth;
+    const headLen = Math.min(width * 5, len * 0.3);
+    const gapStart = Math.min(S.markerSize * 0.25, len * 0.15);
+    const gapEnd = Math.min(S.markerSize * 0.35, len * 0.2);
+    const u0 = gapStart / len;
+    const uHead = 1 - (gapEnd + headLen) / len;
+    const uEnd = 1 - gapEnd / len;
+    if (uHead <= u0) return;
+
+    const pts = [];
+    const N = 64;
+    for (let i = 0; i <= N; i++) pts.push(curve.getPointAt(u0 + (uHead - u0) * i / N));
+    const path = new THREE.CatmullRomCurve3(pts);
+    const mat = new THREE.MeshStandardMaterial({
+        color: r.color, roughness: 0.45, metalness: 0.05,
+        emissive: new THREE.Color(r.color).multiplyScalar(0.25)
+    });
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(path, 96, width, 16, false), mat);
+    tube.castShadow = true;
+    routeGroup.add(tube);
+
+    const head = new THREE.Mesh(new THREE.ConeGeometry(width * 2.4, headLen, 24), mat);
+    const pHead = curve.getPointAt(uHead), pEnd = curve.getPointAt(uEnd);
+    const dir = pEnd.clone().sub(pHead).normalize();
+    head.position.copy(pHead).addScaledVector(dir, headLen / 2);
+    head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    head.castShadow = true;
+    routeGroup.add(head);
+
+    const canvas = routeLabelCanvas(r, a, b);
+    if (canvas) {
+        const sprite = makeSprite(canvas, S.markerSize * 0.6 * canvas.height / 140, [0.5, 0.5]);
+        sprite.position.copy(curve.getPoint(0.5));
+        sprite.renderOrder = 11;
+        routeGroup.add(sprite);
     }
 }
 
@@ -688,6 +910,7 @@ function tick(now) {
         if (t >= 1) { camAnim = null; saveSoon(); }
     }
     controls.update();
+    updateFlatLabels();
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
 }
@@ -825,6 +1048,7 @@ async function municipioCentroid(id) {
 
 function choosePlace(place) {
     pendingMarker = place;
+    updatePaintOption();
     const title = document.getElementById('mk-title');
     if (!editingMarkerId) title.value = place.nome;
     document.getElementById('btn-mk-add').disabled = false;
@@ -852,7 +1076,7 @@ function setupSearch() {
         input.value = `${m.nome}/${m.sigla}`;
         try {
             const c = await municipioCentroid(m.id);
-            choosePlace({ ...c, uf: m.uf, nome: `${m.nome}/${m.sigla}` });
+            choosePlace({ ...c, uf: m.uf, munId: m.id, nome: `${m.nome}/${m.sigla}` });
         } catch (e) {
             console.error(e);
             alert('Não foi possível obter a localização do município no IBGE.');
@@ -913,7 +1137,7 @@ function renderMarkerList() {
     ul.innerHTML = '';
     for (const m of scene3d.markers) {
         const li = document.createElement('li');
-        li.innerHTML = `<span class="swatch" style="background:${m.color}"></span><span class="name">${escapeHtml((m.icon ? m.icon + ' ' : '') + (m.title || m.nome))}</span>
+        li.innerHTML = `<span class="swatch" style="background:${paintsMun(m) ? m.paintColor : m.color}"></span><span class="name">${escapeHtml((m.icon ? m.icon + ' ' : '') + (m.title || m.nome))}</span>
             <button class="icon-btn" data-act="edit" title="Editar"><i class="fa-solid fa-pen"></i></button>
             <button class="icon-btn" data-act="del" title="Remover"><i class="fa-solid fa-xmark"></i></button>`;
         li.querySelector('[data-act="edit"]').addEventListener('click', () => startEditMarker(m));
@@ -981,8 +1205,12 @@ function refreshMarkers() {
 
 function startEditMarker(m) {
     editingMarkerId = m.id;
-    pendingMarker = { lon: m.lon, lat: m.lat, uf: m.uf, nome: m.nome };
+    pendingMarker = { lon: m.lon, lat: m.lat, uf: m.uf, munId: m.munId, nome: m.nome };
     document.getElementById('mk-title').value = m.title;
+    document.getElementById('mk-pin').checked = showsPin(m);
+    document.getElementById('mk-paint').checked = paintsMun(m);
+    if (m.paintColor) document.getElementById('mk-paint-color').value = m.paintColor;
+    updatePaintOption();
     document.getElementById('mk-subtitle').value = m.subtitle;
     document.getElementById('mk-icon').value = m.icon;
     document.getElementById('mk-color').value = m.color;
@@ -1006,6 +1234,15 @@ function resetMarkerForm() {
     btn.innerHTML = '<i class="fa-solid fa-plus"></i> Adicionar';
     document.getElementById('btn-mk-cancel').classList.add('hidden');
     document.getElementById('mk-hint').textContent = 'Escolha um município na busca, ou selecione "Adiciona marcador" em "Clique no mapa".';
+    updatePaintOption();
+}
+
+// "Pintar município" só existe para locais escolhidos na busca (precisa do código do IBGE)
+function updatePaintOption() {
+    const ok = !pendingMarker || !!pendingMarker.munId;
+    document.getElementById('mk-paint').disabled = !ok;
+    document.getElementById('mk-paint-row').classList.toggle('disabled', !ok);
+    document.getElementById('mk-paint-row').title = ok ? '' : 'Disponível só para municípios escolhidos na busca';
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1328,10 @@ function setupPanel() {
             subtitle: document.getElementById('mk-subtitle').value.trim(),
             icon: document.getElementById('mk-icon').value,
             color: document.getElementById('mk-color').value,
-            bg: document.getElementById('mk-bg').value
+            bg: document.getElementById('mk-bg').value,
+            pin: document.getElementById('mk-pin').checked,
+            paint: !!pendingMarker.munId && document.getElementById('mk-paint').checked,
+            paintColor: document.getElementById('mk-paint-color').value
         };
         if (editingMarkerId) {
             const m = scene3d.markers.find(x => x.id === editingMarkerId);
@@ -1104,6 +1344,7 @@ function setupPanel() {
     });
     document.getElementById('btn-mk-cancel').addEventListener('click', resetMarkerForm);
     bindRange('mk-size', 'markerSize', rebuildMarkers, fix2);
+    bindRange('mun-height', 'munHeight', rebuildMarkers, fix2);
 
     // Setas
     document.getElementById('btn-rt-add').addEventListener('click', () => {
@@ -1125,6 +1366,8 @@ function setupPanel() {
     });
     bindRange('rt-arc', 'routeArc', rebuildRoutes, fix2);
     bindRange('rt-width', 'routeWidth', rebuildRoutes, fix2);
+    bindValue('rt-style', 'routeStyle', rebuildRoutes, 'change');
+    bindRange('rt-lift', 'routeLift', rebuildRoutes, fix2);
 
     // Aparência
     bindValue('st-base', 'baseColor', applyStateStyles);

@@ -116,6 +116,11 @@
                         <option value="⭐">⭐ Destaque</option>
                     </select>
                 </div>
+                <label class="check"><input type="checkbox" id="mk-pin"> Mostrar pino</label>
+                <div class="row" id="mk-paint-row">
+                    <label class="check grow"><input type="checkbox" id="mk-paint" checked> Pintar município</label>
+                    <input type="color" id="mk-paint-color" value="#e8a317" title="Cor do município">
+                </div>
                 <div class="row">
                     <label for="mk-color">Cor do pino</label>
                     <input type="color" id="mk-color" value="#d93a3a">
@@ -132,6 +137,11 @@
                     <input type="range" id="mk-size" min="0.3" max="4" step="0.05">
                     <output data-for="mk-size"></output>
                 </div>
+                <div class="row">
+                    <label for="mun-height">Altura do município</label>
+                    <input type="range" id="mun-height" min="0" max="1.5" step="0.01">
+                    <output data-for="mun-height"></output>
+                </div>
                 <ul class="item-list" id="mk-list"></ul>
             </details>
 
@@ -145,6 +155,18 @@
                     <label for="rt-color">Cor</label>
                     <input type="color" id="rt-color" value="#f5b301">
                     <button class="btn success small" id="btn-rt-add"><i class="fa-solid fa-plus"></i> Adicionar seta</button>
+                </div>
+                <div class="row">
+                    <label for="rt-style">Estilo</label>
+                    <select id="rt-style">
+                        <option value="flat">Plana (papel)</option>
+                        <option value="tube">3D (tubo)</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <label for="rt-lift">Altura</label>
+                    <input type="range" id="rt-lift" min="0" max="2" step="0.01">
+                    <output data-for="rt-lift"></output>
                 </div>
                 <div class="row">
                     <label for="rt-arc">Curvatura</label>
