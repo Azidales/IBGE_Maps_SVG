@@ -99,6 +99,9 @@ input[type="color"] {
 .check input { accent-color: var(--primary); }
 .check.grow { flex: 1; margin-bottom: 0; }
 .row.disabled { opacity: 0.45; }
+.img-preview { width: 32px; height: 32px; object-fit: contain; border-radius: 4px; background: rgba(255,255,255,0.08); }
+.file-btn { cursor: pointer; }
+.item-list li img.thumb { width: 18px; height: 18px; object-fit: contain; flex: 0 0 18px; }
 .hint { font-size: 0.72rem; color: var(--text-muted); margin-bottom: 8px; line-height: 1.4; }
 
 .btn {
