@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MapForge BR 3D</title>
+    <link rel="stylesheet" href="mapa3d.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div class="app">
+        <aside class="panel" id="panel">
+            <header class="panel-header">
+                <h1><i class="fa-solid fa-cube"></i> MapForge BR 3D</h1>
+                <p>Arraste para girar · botão direito para mover · roda para zoom</p>
+                <a class="back-link" href="index.html"><i class="fa-solid fa-arrow-left"></i> Editor SVG</a>
+            </header>
+
+            <!-- Foto -->
+            <details class="section" open>
+                <summary><i class="fa-solid fa-camera"></i> Foto</summary>
+                <div class="row">
+                    <label for="photo-size">Tamanho</label>
+                    <select id="photo-size">
+                        <option value="screen">Tela atual (2x)</option>
+                        <option value="1920x1080">1920 × 1080 (16:9)</option>
+                        <option value="3840x2160">3840 × 2160 (4K)</option>
+                        <option value="1200x900" selected>1200 × 900 (4:3)</option>
+                        <option value="2400x1800">2400 × 1800 (4:3)</option>
+                        <option value="1080x1080">1080 × 1080 (1:1)</option>
+                        <option value="1080x1350">1080 × 1350 (4:5)</option>
+                        <option value="1080x1920">1080 × 1920 (9:16)</option>
+                    </select>
+                </div>
+                <label class="check"><input type="checkbox" id="photo-frame" checked> Mostrar enquadramento</label>
+                <label class="check"><input type="checkbox" id="photo-transparent"> Fundo transparente (PNG)</label>
+                <button class="btn primary big" id="btn-photo"><i class="fa-solid fa-camera"></i> Tirar foto</button>
+            </details>
+
+            <!-- Câmera -->
+            <details class="section" open>
+                <summary><i class="fa-solid fa-video"></i> Câmera</summary>
+                <div class="btn-grid">
+                    <button class="btn" data-cam="perspectiva">Perspectiva</button>
+                    <button class="btn" data-cam="topo">Vista de cima</button>
+                    <button class="btn" data-cam="rasante">Rasante</button>
+                    <button class="btn" data-cam="foco">Focar destaque</button>
+                </div>
+                <div class="row">
+                    <label for="cam-fov">Lente (FOV)</label>
+                    <input type="range" id="cam-fov" min="10" max="75" step="1">
+                    <output data-for="cam-fov"></output>
+                </div>
+            </details>
+
+            <!-- Destaques -->
+            <details class="section" open>
+                <summary><i class="fa-solid fa-highlighter"></i> Estados em destaque</summary>
+                <div class="row">
+                    <label for="click-mode">Clique no mapa</label>
+                    <select id="click-mode">
+                        <option value="highlight">Destaca / remove estado</option>
+                        <option value="marker">Adiciona marcador</option>
+                        <option value="none">Não faz nada</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <label for="hl-state">Estado</label>
+                    <select id="hl-state"></select>
+                </div>
+                <div class="row">
+                    <label for="hl-color">Cor do destaque</label>
+                    <input type="color" id="hl-color" value="#4c9a3f">
+                    <button class="btn small" id="btn-hl-add"><i class="fa-solid fa-plus"></i> Destacar</button>
+                </div>
+                <div class="row">
+                    <label for="hl-height">Altura do destaque</label>
+                    <input type="range" id="hl-height" min="0.05" max="4" step="0.05">
+                    <output data-for="hl-height"></output>
+                </div>
+                <ul class="item-list" id="hl-list"></ul>
+            </details>
+
+            <!-- Marcadores -->
+            <details class="section" open>
+                <summary><i class="fa-solid fa-location-dot"></i> Marcadores</summary>
+                <div class="search-wrap">
+                    <input type="text" id="mk-search" placeholder="Buscar município (ex.: Cezarina)" autocomplete="off">
+                    <ul class="search-results hidden" id="mk-results"></ul>
+                </div>
+                <div class="row"><label for="mk-title">Título</label><input type="text" id="mk-title" placeholder="Cezarina/GO"></div>
+                <div class="row"><label for="mk-subtitle">Subtítulo</label><input type="text" id="mk-subtitle" placeholder="(Fábrica)"></div>
+                <div class="row">
+                    <label for="mk-icon">Ícone</label>
+                    <select id="mk-icon">
+                        <option value="">Nenhum</option>
+                        <option value="🏭">🏭 Fábrica</option>
+                        <option value="🚚">🚚 Caminhão</option>
+                        <option value="⛏️">⛏️ Mineração</option>
+                        <option value="🏗️">🏗️ Obra</option>
+                        <option value="🏢">🏢 Escritório</option>
+                        <option value="🏠">🏠 Casa</option>
+                        <option value="🌾">🌾 Agro</option>
+                        <option value="📦">📦 Depósito</option>
+                        <option value="⚓">⚓ Porto</option>
+                        <option value="✈️">✈️ Aeroporto</option>
+                        <option value="⭐">⭐ Destaque</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <label for="mk-color">Cor do pino</label>
+                    <input type="color" id="mk-color" value="#d93a3a">
+                    <label for="mk-bg" class="inline">Etiqueta</label>
+                    <input type="color" id="mk-bg" value="#10283a">
+                </div>
+                <div class="form-actions">
+                    <button class="btn success" id="btn-mk-add" disabled><i class="fa-solid fa-plus"></i> Adicionar</button>
+                    <button class="btn hidden" id="btn-mk-cancel">Cancelar</button>
+                </div>
+                <p class="hint" id="mk-hint">Escolha um município na busca, ou selecione "Adiciona marcador" em "Clique no mapa".</p>
+                <div class="row">
+                    <label for="mk-size">Tamanho</label>
+                    <input type="range" id="mk-size" min="0.3" max="4" step="0.05">
+                    <output data-for="mk-size"></output>
+                </div>
+                <ul class="item-list" id="mk-list"></ul>
+            </details>
+
+            <!-- Setas -->
+            <details class="section" open>
+                <summary><i class="fa-solid fa-route"></i> Setas / rotas</summary>
+                <div class="row"><label for="rt-from">De</label><select id="rt-from"></select></div>
+                <div class="row"><label for="rt-to">Para</label><select id="rt-to"></select></div>
+                <div class="row"><label for="rt-label">Texto</label><input type="text" id="rt-label" placeholder="Automático (~km em linha reta)"></div>
+                <div class="row">
+                    <label for="rt-color">Cor</label>
+                    <input type="color" id="rt-color" value="#f5b301">
+                    <button class="btn success small" id="btn-rt-add"><i class="fa-solid fa-plus"></i> Adicionar seta</button>
+                </div>
+                <div class="row">
+                    <label for="rt-arc">Curvatura</label>
+                    <input type="range" id="rt-arc" min="0" max="0.8" step="0.01">
+                    <output data-for="rt-arc"></output>
+                </div>
+                <div class="row">
+                    <label for="rt-width">Espessura</label>
+                    <input type="range" id="rt-width" min="0.02" max="0.4" step="0.01">
+                    <output data-for="rt-width"></output>
+                </div>
+                <ul class="item-list" id="rt-list"></ul>
+            </details>
+
+            <!-- Aparência -->
+            <details class="section">
+                <summary><i class="fa-solid fa-palette"></i> Aparência do mapa</summary>
+                <div class="row"><label for="st-base">Cor dos estados</label><input type="color" id="st-base"></div>
+                <div class="row">
+                    <label for="st-shade">Sombra das laterais</label>
+                    <input type="range" id="st-shade" min="0.2" max="1" step="0.01">
+                    <output data-for="st-shade"></output>
+                </div>
+                <div class="row">
+                    <label for="st-height">Espessura do mapa</label>
+                    <input type="range" id="st-height" min="0.02" max="3" step="0.02">
+                    <output data-for="st-height"></output>
+                </div>
+                <div class="row"><label for="st-border">Cor das divisas</label><input type="color" id="st-border"></div>
+                <div class="row">
+                    <label for="st-border-w">Espessura das divisas</label>
+                    <input type="range" id="st-border-w" min="0" max="6" step="0.1">
+                    <output data-for="st-border-w"></output>
+                </div>
+                <div class="row">
+                    <label for="st-labels">Rótulos</label>
+                    <select id="st-labels">
+                        <option value="sigla">Sigla (GO)</option>
+                        <option value="nome">Nome (Goiás)</option>
+                        <option value="none">Sem rótulo</option>
+                    </select>
+                </div>
+                <div class="row"><label for="st-label-color">Cor dos rótulos</label><input type="color" id="st-label-color"></div>
+                <div class="row">
+                    <label for="st-label-size">Tamanho dos rótulos</label>
+                    <input type="range" id="st-label-size" min="0.3" max="3" step="0.05">
+                    <output data-for="st-label-size"></output>
+                </div>
+                <div class="row"><label for="st-bg">Cor do fundo</label><input type="color" id="st-bg"></div>
+                <label class="check"><input type="checkbox" id="st-shadows"> Sombras projetadas</label>
+                <div class="row">
+                    <label for="st-light">Direção da luz</label>
+                    <input type="range" id="st-light" min="0" max="360" step="1">
+                    <output data-for="st-light"></output>
+                </div>
+            </details>
+
+            <button class="btn danger" id="btn-reset"><i class="fa-solid fa-rotate-left"></i> Recomeçar cena</button>
+        </aside>
+
+        <main class="stage" id="stage">
+            <div class="frame hidden" id="frame"></div>
+            <div class="tooltip hidden" id="tooltip"></div>
+            <div class="loader" id="loader"><div class="spinner"></div><span id="loader-text">Carregando malha do IBGE...</span></div>
+            <button class="btn panel-toggle" id="btn-panel"><i class="fa-solid fa-sliders"></i></button>
+            <button class="btn primary fab" id="btn-photo-fab" title="Tirar foto"><i class="fa-solid fa-camera"></i></button>
+        </main>
+    </div>
+
+    <script type="module" src="mapa3d.js"></script>
+</body>
+</html>
