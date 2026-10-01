@@ -659,8 +659,9 @@ function buildFlatRoute(r, a, b) {
     let label = null;
     const canvas = routeLabelCanvas(r, a, b);
     if (canvas) {
-        label = makeSprite(canvas, S.markerSize * 0.6 * canvas.height / 140, [0.5, 0]);
-        label.renderOrder = 11; // a etiqueta de km fica por cima dos ícones
+        label = makeCurvedLabel(canvas);
+        label.userData.h = S.markerSize * 0.6 * canvas.height / 140;
+        label.userData.aspect = canvas.width / canvas.height;
     }
     const obj = new THREE.Group();
     obj.add(outline, fill);
@@ -739,11 +740,62 @@ function updateFlatRoutes() {
         if (!ok) continue;
         writeArrow(P.outline, curve, len, u0, uHead, n, halfW, headHalfW, headLen, halfW * 0.3);
         writeArrow(P.fill, curve, len, u0, uHead, n, halfW, headHalfW, headLen, 0);
-        if (P.label) {
-            // etiqueta logo acima do meio do arco
-            P.label.position.copy(curve.getPoint(0.5)).addScaledVector(s, halfW * 1.6);
+        if (P.label) writeCurvedLabel(P.label, curve, len, u0, uHead, n);
+    }
+}
+
+// Etiqueta de km escrita sobre a seta, no meio do corpo, seguindo a curva
+const LABEL_N = 24;
+
+function makeCurvedLabel(canvas) {
+    const verts = (LABEL_N + 1) * 2;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts * 3), 3));
+    const uv = [];
+    const idx = [];
+    for (let i = 0; i <= LABEL_N; i++) {
+        uv.push(i / LABEL_N, 0, i / LABEL_N, 1); // base, topo
+        if (i < LABEL_N) {
+            const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+            idx.push(a, c, b, b, c, d);
         }
     }
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geom.setIndex(idx);
+    const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+        map: makeTexture(canvas), side: THREE.DoubleSide, transparent: true, depthTest: false, depthWrite: false
+    }));
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 11; // por cima dos ícones
+    return mesh;
+}
+
+const _ndcA = new THREE.Vector3(), _ndcB = new THREE.Vector3();
+function writeCurvedLabel(mesh, curve, len, u0, uHead, n) {
+    const body = (uHead - u0) * len;
+    let h = mesh.userData.h;
+    let w = h * mesh.userData.aspect;
+    // não deixa a etiqueta passar do corpo da seta
+    if (w > body * 0.9) { const k = body * 0.9 / w; w *= k; h *= k; }
+    const uMid = (u0 + uHead) / 2;
+    let uStart = uMid - w / 2 / len, uEnd = uMid + w / 2 / len;
+    // texto sempre da esquerda para a direita na tela (senão ficaria de cabeça para baixo)
+    curve.getPointAt(uStart, _ndcA).project(camera);
+    curve.getPointAt(uEnd, _ndcB).project(camera);
+    if (_ndcB.x < _ndcA.x) [uStart, uEnd] = [uEnd, uStart];
+    const pos = mesh.geometry.attributes.position;
+    const { p, t, side } = _v;
+    for (let i = 0; i <= LABEL_N; i++) {
+        const u = uStart + (uEnd - uStart) * i / LABEL_N;
+        curve.getPointAt(u, p);
+        curve.getTangentAt(u, t);
+        if (uEnd < uStart) t.negate();
+        // "para cima" do texto: n (para a câmera) × direção do texto, sem espelhar
+        side.crossVectors(n, t).normalize();
+        pos.setXYZ(i * 2, p.x - side.x * h / 2, p.y - side.y * h / 2, p.z - side.z * h / 2);
+        pos.setXYZ(i * 2 + 1, p.x + side.x * h / 2, p.y + side.y * h / 2, p.z + side.z * h / 2);
+    }
+    pos.needsUpdate = true;
 }
 
 function buildTubeRoute(r, a, b) {
