@@ -114,7 +114,18 @@
                         <option value="⚓">⚓ Porto</option>
                         <option value="✈️">✈️ Aeroporto</option>
                         <option value="⭐">⭐ Destaque</option>
+                        <option value="__img">🖼️ Imagem própria (PNG)…</option>
                     </select>
+                </div>
+                <div class="row hidden" id="mk-img-row">
+                    <label for="mk-img">Arquivo</label>
+                    <img id="mk-img-preview" class="img-preview hidden" alt="">
+                    <label class="btn small file-btn"><i class="fa-solid fa-upload"></i> Escolher imagem<input type="file" id="mk-img" accept="image/png,image/webp,image/jpeg,image/svg+xml" hidden></label>
+                </div>
+                <div class="row">
+                    <label for="mk-icon-size">Tamanho do ícone</label>
+                    <input type="range" id="mk-icon-size" min="0.2" max="5" step="0.05" value="1">
+                    <output id="mk-icon-size-out">1.00</output>
                 </div>
                 <label class="check"><input type="checkbox" id="mk-pin"> Mostrar pino</label>
                 <div class="row" id="mk-paint-row">
@@ -133,7 +144,7 @@
                 </div>
                 <p class="hint" id="mk-hint">Escolha um município na busca, ou selecione "Adiciona marcador" em "Clique no mapa".</p>
                 <div class="row">
-                    <label for="mk-size">Tamanho</label>
+                    <label for="mk-size">Tamanho das etiquetas</label>
                     <input type="range" id="mk-size" min="0.3" max="4" step="0.05">
                     <output data-for="mk-size"></output>
                 </div>

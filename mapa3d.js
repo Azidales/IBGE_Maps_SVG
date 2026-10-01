@@ -285,11 +285,11 @@ function pillCanvas(lines, bg, fg, { radius = 26, padX = 34, padY = 20, border =
     return c;
 }
 
-function pinCanvas(color, icon) {
-    const pinW = 120, pinH = 160, iconH = icon ? 120 : 0;
+function pinCanvas(color) {
+    const pinW = 120, pinH = 160;
     const c = document.createElement('canvas');
     c.width = 160;
-    c.height = pinH + iconH + 12;
+    c.height = pinH + 12;
     const ctx = c.getContext('2d');
     const cx = c.width / 2, r = pinW / 2 - 6, cy = r + 6;
     // gota
@@ -319,12 +319,6 @@ function pinCanvas(color, icon) {
     ctx.arc(cx, cy, r * 0.38, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
-    if (icon) {
-        ctx.font = `${iconH * 0.82}px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        ctx.fillText(icon, cx, c.height - 4);
-    }
     return c;
 }
 
@@ -482,7 +476,25 @@ function rebuildLabels() {
 // Marcadores
 // ---------------------------------------------------------------------------
 // Marcadores antigos (sem o campo "pin") mostram o pino só quando não têm ícone
-const showsPin = m => m.pin ?? !m.icon;
+const hasIcon = m => !!(m.iconImg || m.icon);
+const showsPin = m => m.pin ?? !hasIcon(m);
+// tamanho do ícone/pino é de cada marcador; o das etiquetas é global ("Tamanho das etiquetas")
+const iconHeight = m => 0.85 * (m.iconSize ?? 1);
+const pinHeight = m => 0.95 * (m.iconSize ?? 1);
+
+// Imagens próprias (data URL) já carregadas, para virar textura
+const iconImages = new Map();
+function iconImage(src) {
+    let entry = iconImages.get(src);
+    if (!entry) {
+        const img = new Image();
+        entry = { img, ready: false };
+        iconImages.set(src, entry);
+        img.onload = () => { entry.ready = true; rebuildMarkers(); };
+        img.src = src;
+    }
+    return entry.ready ? entry.img : null;
+}
 const paintsMun = m => !!(m.paint && m.munId);
 
 function markerAnchor(m) {
@@ -562,15 +574,20 @@ function rebuildMarkers() {
             standAt.z = -mun.bbox.maxY;
             labelAt.z = -mun.bbox.minY;
         }
-        if (showsPin(m)) {
-            const pin = pinCanvas(m.color, m.icon);
-            const pinSprite = makeSprite(pin, size * 1.15 * pin.height / 172, [0.5, 0]);
-            pinSprite.position.copy(standAt);
-            markerGroup.add(pinSprite);
-        } else if (m.icon) {
-            const iconSprite = makeSprite(markerIconCanvas(m.icon), size * 1.05, [0.5, 0]);
+        let iconH = 0;
+        const iconSrc = m.iconImg ? iconImage(m.iconImg) : (m.icon ? markerIconCanvas(m.icon) : null);
+        if (iconSrc) {
+            iconH = iconHeight(m);
+            const iconSprite = makeSprite(iconSrc, iconH, [0.5, 0]);
             iconSprite.position.copy(standAt);
             markerGroup.add(iconSprite);
+        }
+        if (showsPin(m)) {
+            // o pino fica em cima do ícone (empilhado na tela)
+            const pinH = pinHeight(m);
+            const pinSprite = makeSprite(pinCanvas(m.color), pinH, [0.5, iconH ? -iconH / pinH - 0.02 : 0]);
+            pinSprite.position.copy(standAt);
+            markerGroup.add(pinSprite);
         }
 
         if (m.title || m.subtitle) {
@@ -607,123 +624,125 @@ function routeLabelCanvas(r, a, b) {
     return pillCanvas([{ text, size: 60, weight: 800 }], r.color, fg, { radius: 40, border: 'rgba(0,0,0,0.18)' });
 }
 
-// Altura do topo do mapa (estado ou município pintado) num ponto do chão
-const downRay = new THREE.Raycaster();
-function surfaceHeightAt(x, z) {
-    downRay.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
-    const targets = Object.values(stateObjs).map(o => o.mesh)
-        .concat(munGroup.children.map(g => g.children[0]));
-    const hit = downRay.intersectObjects(targets, false)[0];
-    return hit ? hit.point.y : 0;
-}
+// Seta "de papel" (estilo Paper Mario): um recorte plano que sempre fica de frente
+// para a câmera. Os vértices são recalculados a cada quadro em updateFlatRoutes().
+const ARROW_N = 48; // segmentos do corpo
 
-// Contorno da seta (corpo + ponta) no plano do chão, em coordenadas 2D (x, -z)
-function arrowOutline(curve, len, u0, uHead, halfW, headHalfW, headLen, grow) {
-    const left = [], right = [];
-    const N = 64;
-    for (let i = 0; i <= N; i++) {
-        const u = u0 + (uHead - u0) * i / N;
-        const p = curve.getPointAt(u);
-        const t = curve.getTangentAt(u);
-        const n = new THREE.Vector2(-t.y, t.x);
-        left.push(p.clone().addScaledVector(n, halfW + grow));
-        right.push(p.clone().addScaledVector(n, -(halfW + grow)));
+function makeArrowMesh(color, renderOrder) {
+    const verts = (ARROW_N + 1) * 2 + 3;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts * 3), 3));
+    const idx = [];
+    for (let i = 0; i < ARROW_N; i++) {
+        const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+        idx.push(a, b, c, b, d, c);
     }
-    // recua o começo um pouco para o contorno também cobrir a ponta de trás
-    const t0 = curve.getTangentAt(u0);
-    left[0].addScaledVector(t0, -grow);
-    right[0].addScaledVector(t0, -grow);
-    const base = curve.getPointAt(uHead);
-    const tH = curve.getTangentAt(uHead);
-    const nH = new THREE.Vector2(-tH.y, tH.x);
-    const tip = base.clone().addScaledVector(tH, headLen + grow * 2.2);
-    const back = base.clone().addScaledVector(tH, -grow);
-    const pts = [
-        ...left,
-        back.clone().addScaledVector(nH, headHalfW + grow * 1.8),
-        tip,
-        back.clone().addScaledVector(nH, -(headHalfW + grow * 1.8)),
-        ...right.reverse()
-    ];
-    return new THREE.Shape(pts);
+    const h = (ARROW_N + 1) * 2;
+    idx.push(h, h + 1, h + 2);
+    geom.setIndex(idx);
+    const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+        color, side: THREE.DoubleSide, transparent: true, depthTest: false, depthWrite: false
+    }));
+    mesh.frustumCulled = false;
+    mesh.renderOrder = renderOrder;
+    return mesh;
 }
 
-// Seta "de papel": figura plana deitada sobre o mapa, que acompanha a perspectiva
 function buildFlatRoute(r, a, b) {
-    const A3 = markerAnchor(a), B3 = markerAnchor(b);
-    const A = new THREE.Vector2(A3.x, -A3.z), B = new THREE.Vector2(B3.x, -B3.z);
-    const dist = A.distanceTo(B);
-    if (dist < 0.01) return;
-    const mid = A.clone().add(B).multiplyScalar(0.5);
-    const side = new THREE.Vector2(-(B.y - A.y), B.x - A.x).normalize();
-    const curve = new THREE.QuadraticBezierCurve(A, mid.clone().addScaledVector(side, S.routeArc * dist), B);
-    const len = curve.getLength();
-    const halfW = S.routeWidth * 1.5;
-    const headLen = Math.min(halfW * 4.5, len * 0.35);
-    const headHalfW = halfW * 2.6;
-    const gapStart = Math.min(S.markerSize * 0.35, len * 0.15);
-    // o ícone/pino de destino fica em pé sobre o ponto: para antes dele
-    const gapEnd = Math.min(S.markerSize * (showsPin(b) || b.icon ? 0.7 : 0.35), len * 0.25);
-    const u0 = gapStart / len;
-    const uHead = 1 - (gapEnd + headLen) / len;
-    if (uHead <= u0) return;
-
-    // flutua um pouco acima do ponto mais alto do mapa sob a seta
-    scene.updateMatrixWorld();
-    let top = Math.max(A3.y, B3.y);
-    for (let i = 0; i <= 20; i++) {
-        const p = curve.getPoint(i / 20);
-        top = Math.max(top, surfaceHeightAt(p.x, -p.y));
-    }
-    const y = top + S.routeLift;
-
+    const A = markerAnchor(a), B = markerAnchor(b);
+    A.y += S.routeLift;
+    B.y += S.routeLift;
+    if (A.distanceTo(B) < 0.01) return;
     const color = new THREE.Color(r.color);
-    const layers = [
-        { grow: halfW * 0.28, color: color.clone().multiplyScalar(0.55), y: y - 0.004, shadow: true },
-        { grow: 0, color, y, shadow: false }
-    ];
-    for (const L of layers) {
-        const shape = arrowOutline(curve, len, u0, uHead, halfW, headHalfW, headLen, L.grow);
-        const mesh = new THREE.Mesh(
-            new THREE.ShapeGeometry(shape),
-            new THREE.MeshBasicMaterial({ color: L.color, side: THREE.DoubleSide })
-        );
-        mesh.rotation.x = -Math.PI / 2;
-        mesh.position.y = L.y;
-        mesh.castShadow = L.shadow;
-        routeGroup.add(mesh);
-    }
-
+    const outline = makeArrowMesh(color.clone().multiplyScalar(0.55), 4);
+    const fill = makeArrowMesh(color, 5);
+    let label = null;
     const canvas = routeLabelCanvas(r, a, b);
     if (canvas) {
-        // deitado no chão o texto fica achatado pela perspectiva: um pouco maior que o das setas 3D
-        const h = S.markerSize * 0.95 * canvas.height / 140;
-        const w = h * canvas.width / canvas.height;
-        const label = new THREE.Mesh(
-            new THREE.PlaneGeometry(w, h),
-            new THREE.MeshBasicMaterial({ map: makeTexture(canvas), transparent: true, depthWrite: false, side: THREE.DoubleSide })
-        );
-        // posição e giro dependem da câmera: ver updateFlatLabels()
-        label.userData.flat = { mid: curve.getPoint(0.5), n: side.clone(), gap: halfW * 1.3, w, h, y: y + 0.01 };
-        label.renderOrder = 3;
-        routeGroup.add(label);
-        updateFlatLabels();
+        label = makeSprite(canvas, S.markerSize * 0.6 * canvas.height / 140, [0.5, 0]);
+        label.renderOrder = 11; // a etiqueta de km fica por cima dos ícones
     }
+    const obj = new THREE.Group();
+    obj.add(outline, fill);
+    if (label) obj.add(label);
+    obj.userData.paper = {
+        A, B, outline, fill, label,
+        // o ícone/pino de destino fica em pé sobre o ponto: a ponta para antes dele
+        gapStart: S.markerSize * 0.3,
+        gapEnd: showsPin(b) || hasIcon(b) ? iconHeight(b) * 0.55 : S.markerSize * 0.3
+    };
+    routeGroup.add(obj);
+    updateFlatRoutes();
 }
 
-// Rótulos das setas planas ficam deitados no mapa, mas com o texto alinhado
-// à horizontal da câmera, ao lado da curva (no lado de fora do arco).
-function updateFlatLabels() {
-    const az = controls.getAzimuthalAngle();
-    const right = new THREE.Vector2(Math.cos(az), Math.sin(az));
-    const up = new THREE.Vector2(-Math.sin(az), Math.cos(az));
-    for (const o of routeGroup.children) {
-        const f = o.userData.flat;
-        if (!f) continue;
-        const extent = Math.abs(f.w / 2 * right.dot(f.n)) + Math.abs(f.h / 2 * up.dot(f.n));
-        const p = f.mid.clone().addScaledVector(f.n, f.gap + extent);
-        o.rotation.set(-Math.PI / 2, 0, az);
-        o.position.set(p.x, f.y, -p.y);
+const _v = {
+    d: new THREE.Vector3(), mid: new THREE.Vector3(), view: new THREE.Vector3(),
+    n: new THREE.Vector3(), s: new THREE.Vector3(), up: new THREE.Vector3(),
+    p: new THREE.Vector3(), t: new THREE.Vector3(), side: new THREE.Vector3()
+};
+
+function writeArrow(mesh, curve, len, u0, uHead, n, halfW, headHalfW, headLen, grow) {
+    const pos = mesh.geometry.attributes.position;
+    const { p, t, side } = _v;
+    let k = 0;
+    for (let i = 0; i <= ARROW_N; i++) {
+        const u = u0 + (uHead - u0) * i / ARROW_N;
+        curve.getPointAt(u, p);
+        curve.getTangentAt(u, t);
+        if (i === 0) p.addScaledVector(t, -grow);
+        side.crossVectors(n, t).normalize();
+        pos.setXYZ(k++, p.x + side.x * (halfW + grow), p.y + side.y * (halfW + grow), p.z + side.z * (halfW + grow));
+        pos.setXYZ(k++, p.x - side.x * (halfW + grow), p.y - side.y * (halfW + grow), p.z - side.z * (halfW + grow));
+    }
+    curve.getPointAt(uHead, p);
+    curve.getTangentAt(uHead, t);
+    side.crossVectors(n, t).normalize();
+    const back = p.clone().addScaledVector(t, -grow);
+    const hw = headHalfW + grow * 1.8;
+    pos.setXYZ(k++, back.x + side.x * hw, back.y + side.y * hw, back.z + side.z * hw);
+    pos.setXYZ(k++, back.x - side.x * hw, back.y - side.y * hw, back.z - side.z * hw);
+    const tip = p.addScaledVector(t, headLen + grow * 2.2);
+    pos.setXYZ(k++, tip.x, tip.y, tip.z);
+    pos.needsUpdate = true;
+}
+
+function updateFlatRoutes() {
+    const { d, mid, view, n, s, up } = _v;
+    up.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    for (const obj of routeGroup.children) {
+        const P = obj.userData.paper;
+        if (!P) continue;
+        const { A, B } = P;
+        d.subVectors(B, A);
+        const dist = d.length();
+        d.divideScalar(dist);
+        mid.addVectors(A, B).multiplyScalar(0.5);
+        // plano que contém A e B e fica o mais de frente possível para a câmera
+        view.subVectors(camera.position, mid).normalize();
+        n.copy(view).addScaledVector(d, -view.dot(d));
+        if (n.lengthSq() < 1e-8) n.copy(up);
+        n.normalize();
+        // o arco curva para "cima" na tela
+        s.crossVectors(n, d).normalize();
+        if (s.dot(up) < 0) s.negate();
+        const ctrl = mid.clone().addScaledVector(s, S.routeArc * dist);
+        const curve = new THREE.QuadraticBezierCurve3(A, ctrl, B);
+        curve.arcLengthDivisions = 60;
+        const len = curve.getLength();
+        const halfW = S.routeWidth * 1.4;
+        const headLen = Math.min(halfW * 4.5, len * 0.35);
+        const headHalfW = halfW * 2.6;
+        const u0 = Math.min(P.gapStart, len * 0.2) / len;
+        const uHead = 1 - (Math.min(P.gapEnd, len * 0.3) + headLen) / len;
+        const ok = uHead > u0;
+        P.outline.visible = P.fill.visible = ok;
+        if (!ok) continue;
+        writeArrow(P.outline, curve, len, u0, uHead, n, halfW, headHalfW, headLen, halfW * 0.3);
+        writeArrow(P.fill, curve, len, u0, uHead, n, halfW, headHalfW, headLen, 0);
+        if (P.label) {
+            // etiqueta logo acima do meio do arco
+            P.label.position.copy(curve.getPoint(0.5)).addScaledVector(s, halfW * 1.6);
+        }
     }
 }
 
@@ -910,7 +929,7 @@ function tick(now) {
         if (t >= 1) { camAnim = null; saveSoon(); }
     }
     controls.update();
-    updateFlatLabels();
+    updateFlatRoutes();
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
 }
@@ -1137,9 +1156,10 @@ function renderMarkerList() {
     ul.innerHTML = '';
     for (const m of scene3d.markers) {
         const li = document.createElement('li');
-        li.innerHTML = `<span class="swatch" style="background:${paintsMun(m) ? m.paintColor : m.color}"></span><span class="name">${escapeHtml((m.icon ? m.icon + ' ' : '') + (m.title || m.nome))}</span>
+        li.innerHTML = `<span class="swatch" style="background:${paintsMun(m) ? m.paintColor : m.color}"></span>${m.iconImg ? '<img class="thumb" alt="">' : ''}<span class="name">${escapeHtml((m.icon ? m.icon + ' ' : '') + (m.title || m.nome))}</span>
             <button class="icon-btn" data-act="edit" title="Editar"><i class="fa-solid fa-pen"></i></button>
             <button class="icon-btn" data-act="del" title="Remover"><i class="fa-solid fa-xmark"></i></button>`;
+        if (m.iconImg) li.querySelector('img.thumb').src = m.iconImg;
         li.querySelector('[data-act="edit"]').addEventListener('click', () => startEditMarker(m));
         li.querySelector('[data-act="del"]').addEventListener('click', () => {
             scene3d.markers = scene3d.markers.filter(x => x.id !== m.id);
@@ -1212,7 +1232,10 @@ function startEditMarker(m) {
     if (m.paintColor) document.getElementById('mk-paint-color').value = m.paintColor;
     updatePaintOption();
     document.getElementById('mk-subtitle').value = m.subtitle;
-    document.getElementById('mk-icon').value = m.icon;
+    document.getElementById('mk-icon').value = m.iconImg ? '__img' : (m.icon || '');
+    formIconImg = m.iconImg || null;
+    setIconSizeInput(m.iconSize ?? 1);
+    updateIconInputs();
     document.getElementById('mk-color').value = m.color;
     document.getElementById('mk-bg').value = m.bg;
     document.getElementById('mk-search').value = '';
@@ -1221,6 +1244,79 @@ function startEditMarker(m) {
     btn.innerHTML = '<i class="fa-solid fa-check"></i> Salvar';
     document.getElementById('btn-mk-cancel').classList.remove('hidden');
     document.getElementById('mk-hint').textContent = `Editando: ${m.nome}. Busque outro município ou clique no mapa para mudar o local.`;
+}
+
+// Ícone próprio: a imagem é reduzida (máx. 256 px) e guardada como data URL no marcador
+let formIconImg = null;
+
+function setIconSizeInput(v) {
+    document.getElementById('mk-icon-size').value = v;
+    document.getElementById('mk-icon-size-out').textContent = Number(v).toFixed(2);
+}
+
+function updateIconInputs() {
+    const custom = document.getElementById('mk-icon').value === '__img';
+    document.getElementById('mk-img-row').classList.toggle('hidden', !custom);
+    const prev = document.getElementById('mk-img-preview');
+    prev.classList.toggle('hidden', !formIconImg);
+    if (formIconImg) prev.src = formIconImg;
+}
+
+function readIconFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error);
+        reader.onload = () => {
+            const img = new Image();
+            img.onerror = () => reject(new Error('imagem inválida'));
+            img.onload = () => {
+                const w = img.naturalWidth || 256, h = img.naturalHeight || 256;
+                const k = Math.min(1, 256 / Math.max(w, h));
+                const c = document.createElement('canvas');
+                c.width = Math.max(1, Math.round(w * k));
+                c.height = Math.max(1, Math.round(h * k));
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                resolve(c.toDataURL('image/png'));
+            };
+            img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+function setupIconInputs() {
+    const sel = document.getElementById('mk-icon');
+    sel.addEventListener('change', updateIconInputs);
+    document.getElementById('mk-img').addEventListener('change', async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+            formIconImg = await readIconFile(file);
+        } catch (err) {
+            alert('Não foi possível ler essa imagem.');
+            return;
+        } finally {
+            e.target.value = '';
+        }
+        updateIconInputs();
+        // editando um marcador: aplica na hora
+        const m = editingMarkerId && scene3d.markers.find(x => x.id === editingMarkerId);
+        if (m) {
+            m.icon = '';
+            m.iconImg = formIconImg;
+            refreshMarkers();
+        }
+    });
+    document.getElementById('mk-icon-size').addEventListener('input', e => {
+        setIconSizeInput(e.target.value);
+        const m = editingMarkerId && scene3d.markers.find(x => x.id === editingMarkerId);
+        if (m) {
+            m.iconSize = parseFloat(e.target.value);
+            rebuildMarkers();
+            saveSoon();
+        }
+    });
+    updateIconInputs();
 }
 
 function resetMarkerForm() {
@@ -1322,11 +1418,18 @@ function setupPanel() {
     setupSearch();
     document.getElementById('btn-mk-add').addEventListener('click', () => {
         if (!pendingMarker) return;
+        const iconSel = document.getElementById('mk-icon').value;
+        if (iconSel === '__img' && !formIconImg) {
+            alert('Escolha o arquivo da imagem do ícone.');
+            return;
+        }
         const data = {
             ...pendingMarker,
             title: document.getElementById('mk-title').value.trim(),
             subtitle: document.getElementById('mk-subtitle').value.trim(),
-            icon: document.getElementById('mk-icon').value,
+            icon: iconSel === '__img' ? '' : iconSel,
+            iconImg: iconSel === '__img' ? formIconImg : null,
+            iconSize: parseFloat(document.getElementById('mk-icon-size').value),
             color: document.getElementById('mk-color').value,
             bg: document.getElementById('mk-bg').value,
             pin: document.getElementById('mk-pin').checked,
@@ -1343,6 +1446,7 @@ function setupPanel() {
         refreshMarkers();
     });
     document.getElementById('btn-mk-cancel').addEventListener('click', resetMarkerForm);
+    setupIconInputs();
     bindRange('mk-size', 'markerSize', rebuildMarkers, fix2);
     bindRange('mun-height', 'munHeight', rebuildMarkers, fix2);
 
